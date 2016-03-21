@@ -38,7 +38,7 @@ void main() {
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     vec4 projPosition = projectionMatrix * mvPosition;
     // gl_PointSize = pointSize;
-    gl_PointSize = (1. - (distance / depth * 0.9)) * pointSize;
+    gl_PointSize = max(1., (1. - (distance / depth * 0.9)) * pointSize);
     gl_Position = projPosition;
 }
 </script>
@@ -71,9 +71,9 @@ if (!Detector.webgl) Detector.addGetWebGLMessage();
 var container, stats;
 var camera, scene, renderer, controls;
 
-var outerRadius = 6000;  // star tunnel radius in coordinate units
-var innerRadius = 400;
 var depth = 20000;   // star tunnel depth
+var outerRadius = depth/2;  // star tunnel radius in coordinate units
+var innerRadius = 400;
 
 var numStars = 10000;
 var starSystem;
@@ -272,10 +272,11 @@ function rebuildPath() {
     // geometry.computeBoundingBox();
 
     var pathMaterial =  new THREE.LineBasicMaterial({
-        color: 0x0dd6611, 
+        // color: 0x0dd6611,
+        color: 0x0662211,
         linewidth: 0.7,
-        // transparent: true,
-        // blending: THREE.AdditiveBlending,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
         fog: true,
     });
     path.add(new THREE.Line(geometry, pathMaterial));
