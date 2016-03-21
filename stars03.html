@@ -26,27 +26,25 @@ uniform float time;
 uniform float depth;
 uniform float alpha;
 uniform float pointSize;
-uniform float speed;
+uniform float translateZ;
 // attribute vec3 position;
 
-varying vec3 vPosition;
+varying vec4 vPosition;
 varying float distance;
 
 void main() {
-    vPosition = position;
-    distance = length(position); // Distance from origin, NOT from camera
-    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-    vec4 projPosition = projectionMatrix * mvPosition;
-    // gl_PointSize = pointSize;
+    float newZ = mod(position.z + translateZ, depth);
+    vPosition = vec4(position.x, position.y, newZ, 1.0);
+    distance = length(vPosition); // Distance from origin, NOT from camera
     gl_PointSize = max(1., (1. - (distance / depth * 0.9)) * pointSize);
-    gl_Position = projPosition;
+    gl_Position = projectionMatrix * modelViewMatrix * vPosition;
 }
 </script>
 
 <script type="x-shader/x-fragment" id="stars-fragmentshader">
 uniform float depth;
 uniform float alpha;
-varying vec3 vPosition;
+varying vec4 vPosition;
 varying float distance;
 
 void main() {
@@ -169,7 +167,7 @@ function initStars() {
         depth: { type: "f", value: depth },
         alpha: { type: "f", value: 0.95 },
         pointSize: { type: "f", value: 2.3 }, // in screen pixels
-        speed: { type: "f", value: speed },
+        translateZ: { type: "f", value: 0 },
         // color: { type: "c", value: new THREE.Color(0x00ff00) },
     };
     var material = new THREE.ShaderMaterial({
@@ -194,8 +192,8 @@ function initLookAheadObj() {
     canvas.height = w;
     var ctx = canvas.getContext("2d");
     ctx.lineWidth = outline;
-    ctx.strokeStyle = '#ffffff';
-    // ctx.strokeStyle = '#181818';
+    // ctx.strokeStyle = '#ffffff';
+    ctx.strokeStyle = '#333333';
     ctx.arc(w/2, w/2, w/2-outline, 0, 2*Math.PI);
     ctx.stroke();
     
@@ -307,7 +305,7 @@ function animate() {
 
     // Star field
     starSystem.material.uniforms.time.value = time;
-    moveZ(starSystem.geometry.attributes.position, speed);
+    starSystem.material.uniforms.translateZ.value -= speed;
     
     // Path and control points
     for (var i=0; i<controlPoints.length; i++) {
@@ -343,19 +341,6 @@ function animate() {
 
 function render() {
     renderer.render(scene, camera);
-}
-
-function moveZ(positions, speed) {
-    var hasWrapped = false;
-    for (var i=0; i<positions.count*3; i+=3) {
-        positions.array[i+2] -= speed;
-        if (positions.array[i+2] < 0) {
-            positions.array[i+2] += depth;
-            hasWrapped = true;
-        }
-    }
-    positions.needsUpdate = true; // important!
-    return hasWrapped;
 }
 
 </script>
