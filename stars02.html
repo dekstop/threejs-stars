@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>stars</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+    body {
+        background-color: #050505;
+        margin: 0px;
+        overflow: hidden;
+    }
+    </style>
+</head>
+<body>
+    
+<div id="container"></div>
+
+<script src="js/vendor/three-r74.min.js"></script>
+<script src="js/vendor/OrbitControls.js"></script>
+<script src="js/vendor/Detector.js"></script>
+<script src="js/vendor/stats.min.js"></script>
+
+<script type="x-shader/x-vertex" id="stars-vertexshader">
+uniform float time;
+uniform float depth;
+uniform float alpha;
+uniform float pointSize;
+uniform float speed;
+// attribute vec3 position;
+
+varying vec3 vPosition;
+varying float distance;
+
+void main() {
+    vPosition = position;
+    distance = length(position); // Distance from origin, NOT from camera
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    vec4 projPosition = projectionMatrix * mvPosition;
+    // gl_PointSize = pointSize;
+    gl_PointSize = (1. - (distance / depth * 0.9)) * pointSize;
+    gl_Position = projPosition;
+}
+</script>
+
+<script type="x-shader/x-fragment" id="stars-fragmentshader">
+uniform float depth;
+uniform float alpha;
+varying vec3 vPosition;
+varying float distance;
+
+void main() {
+    // gl_FragColor = vec4(1, 1, 1, alpha);
+    // Inverse distance, [0..1]
+    float a = clamp(1. - (distance / depth) / 2., 0., 1.);
+    // Fade out again when approaching origin
+    float nearDist = 700.;
+    // float na = 1.0 - pow(1. - min(distance, nearDist) / nearDist, 3.);
+    float na = 1.0 - pow(1. - min(vPosition.z, nearDist) / nearDist, 3.);
+    gl_FragColor = vec4(
+        pow(a, 3.),
+        pow(a, 2.),
+        a,
+        na * alpha);
+}
+</script>
+
+<script>
+if (!Detector.webgl) Detector.addGetWebGLMessage();
+
+var container, stats;
+var camera, scene, renderer, controls;
+
+var outerRadius = 6000;  // star tunnel radius in coordinate units
+var innerRadius = 400;
+var depth = 20000;   // star tunnel depth
+
+var numStars = 10000;
+var starSystem;
+
+var controlPointDistance = 2000;
+var numControlPoints = Math.round(depth / controlPointDistance) + 2;
+var controlPoints;
+var pathCurve;
+var path;
+
+var speed = 50.0;   // in coordinate units per frame
+var player;
+
+var cameraY = 20;
+var cameraZ = -300;
+var cameraLookAhead = 1700;
+var lookAheadObj;
+
+initDOM();
+initScene();
+update();
+
+function initDOM() {
+    container = document.getElementById('container');
+
+    renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    stats = new Stats();
+    stats.domElement.style.position = 'absolute';
+    stats.domElement.style.top = '0px';
+    container.appendChild(stats.domElement);
+
+    window.addEventListener('resize', onWindowResize, false);
+}
+
+function initScene() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0001133, cameraZ, depth);
+
+    initStars();
+    initControlPoints();
+    initPath();
+    initLookAheadObj();
+    
+    // Player
+    player = new THREE.Mesh(
+        new THREE.BoxGeometry(40, 140, 1), 
+        new THREE.MeshBasicMaterial({
+            color: 0x880000,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+        }));
+    scene.add(player);
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(27, window.innerWidth / window.innerHeight, 1, depth);
+    camera.position.set(0, 0, cameraZ);
+    camera.lookAt(new THREE.Vector3(0, 0, depth));
+    // camera.position.set(2000, 0, 0);
+    // camera.lookAt(new THREE.Vector3(0, 0, 0));
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+}
+
+function initStars() {
+    // Particle system
+    var geometry = new THREE.BufferGeometry();
+    var positions = new Float32Array(numStars * 3);
+
+    var color = new THREE.Color();
+    var innerR = innerRadius / outerRadius;
+    for (var i=0; i<numStars; i++) {
+        // Random point in circle
+        var t = 2 * Math.PI * Math.random();
+        var u = innerR + (1-innerR) * (Math.random() + Math.random());
+        var r = (u>1 ? 2-u : u);
+        var x = outerRadius * r * Math.cos(t);
+        var y = outerRadius * r * Math.sin(t);
+        var z = Math.random() * depth;
+        positions[i*3]     = x;
+        positions[i*3 + 1] = y;
+        positions[i*3 + 2] = z;
+    }
+
+    geometry.addAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.computeBoundingSphere();
+
+    // var material = new ShaderMaterial({});
+    var uniforms = {
+        time: { type: "f", value: 0 },
+        depth: { type: "f", value: depth },
+        alpha: { type: "f", value: 0.95 },
+        pointSize: { type: "f", value: 2.3 }, // in screen pixels
+        speed: { type: "f", value: speed },
+        // color: { type: "c", value: new THREE.Color(0x00ff00) },
+    };
+    var material = new THREE.ShaderMaterial({
+        uniforms: uniforms,
+        vertexShader: document.getElementById('stars-vertexshader').textContent,
+        fragmentShader: document.getElementById('stars-fragmentshader').textContent,
+        transparent: true,
+        depthTest: false,
+    });
+    material.blending = THREE.AdditiveBlending;
+    
+    starSystem = new THREE.Points(geometry, material);
+    scene.add(starSystem);
+}
+
+function initLookAheadObj() {
+    // Draw a circle texture
+    var w = 128;
+    var outline = w / 13;
+    var canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = w;
+    var ctx = canvas.getContext("2d");
+    ctx.lineWidth = outline;
+    ctx.strokeStyle = '#181818';
+    ctx.arc(w/2, w/2, w/2-outline, 0, 2*Math.PI);
+    ctx.stroke();
+    
+    var texture = new THREE.Texture(canvas);
+    texture.needsUpdate = true;
+    var material = new THREE.MeshBasicMaterial({
+        map: texture,
+        fog: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+    });
+    
+    lookAheadObj = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), material);
+    // lookAheadObj.overdraw = true;
+    // lookAheadObj.doubleSided = true;
+    // lookAheadObj.rotateX(Math.PI);
+    scene.add(lookAheadObj);
+}
+
+function initControlPoints() {
+    controlPoints = new THREE.Object3D();
+    for (var i=0; i<numControlPoints; i++) {
+        var z = depth - i * controlPointDistance;
+        controlPoints.add(makeControlPointAtZ(z));
+    }
+    scene.add(controlPoints);
+}
+
+function makeControlPointAtZ(z) {
+    // Random point in circle
+    var t = 2 * Math.PI * Math.random();
+    var u = Math.random() + Math.random();
+    var r = (u>1 ? 2-u : u);
+    var x = 0.5 * innerRadius * r * Math.cos(t);
+    var y = 0.5 * innerRadius * r * Math.sin(t);
+
+    // Object
+    var point = new THREE.Mesh(
+        new THREE.SphereGeometry(3, 8, 8), 
+        new THREE.MeshBasicMaterial({
+            color: 0x0ff8811,
+            // color: 0x0442202,
+            // transparent: true,
+            // blending: THREE.AdditiveBlending,
+        }));
+    point.position.set(x, y, z);
+    return point;
+}
+
+function initPath() {
+    path = new THREE.Object3D();
+    rebuildPath();
+    scene.add(path);
+}
+
+function rebuildPath() {
+    // Clear old lines
+    path.children = [];
+    path.position.z = 0;
+    
+    sortControlPoints();
+    var points = [];
+    for (var i=0; i<numControlPoints; i++) {
+        points.push(controlPoints.children[i].position.clone());
+    }
+    pathCurve = new THREE.CatmullRomCurve3(points);
+    // pathCurve.type = 'chordal';
+    // pathCurve.type = 'catmullrom'; pathCurve.tension = 0.8;
+
+    var geometry = new THREE.Geometry();
+    var points = pathCurve.getPoints(40 * numControlPoints);
+    for (var i=0; i<points.length; i++) {
+        geometry.vertices.push(points[i]);
+    }
+    // geometry.computeBoundingBox();
+
+    var pathMaterial =  new THREE.LineBasicMaterial({
+        color: 0x0dd6611, 
+        linewidth: 0.7,
+        // transparent: true,
+        // blending: THREE.AdditiveBlending,
+        fog: true,
+    });
+    path.add(new THREE.Line(geometry, pathMaterial));
+}
+
+// In reverse order: farthest Z comes first
+function sortControlPoints() {
+    controlPoints.children.sort(function(a,b) {
+        return b.position.z - a.position.z;
+    });
+}
+
+function pathPositionAtZ(z) {
+    var farthest = controlPoints.children[0];
+    var nearest = controlPoints.children[controlPoints.children.length - 1];
+    var curveLength = farthest.position.z - nearest.position.z;
+    var curvePos = (farthest.position.z - z) / curveLength;
+    return pathCurve.getPoint(curvePos);
+}
+
+function applyPathQuaternionAtZ(z, obj3d) {
+    var farthest = controlPoints.children[0];
+    var nearest = controlPoints.children[controlPoints.children.length - 1];
+    var curveLength = farthest.position.z - nearest.position.z;
+    var curvePos = (farthest.position.z - z) / curveLength;
+
+    var up = new THREE.Vector3(0, 1, 0);
+    var tangent = pathCurve.getTangent(curvePos).normalize();
+    var axis = new THREE.Vector3();
+    axis.crossVectors(up, tangent).normalize();
+    var radians = Math.acos(up.dot(tangent));
+    obj3d.quaternion.setFromAxisAngle(axis, radians);
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function update() {
+    controls.update();
+    animate();
+    render();
+    stats.update();
+    requestAnimationFrame(update);
+}
+
+function animate() {
+    var time = performance.now() / 1000;
+
+    // Star field
+    starSystem.material.uniforms.time.value = time;
+    moveZ(starSystem.geometry.attributes.position, speed);
+    
+    // Path and control points
+    path.position.z -= speed;
+    var farthestZ = controlPoints.children[0].position.z; // Assumes it's sorted
+    var z = farthestZ + controlPointDistance;
+    var needsRebuild = false;
+    var cpp = controlPoints.children.slice(); // clone -- we might alter it
+    for (var i=0; i<cpp.length; i++) {
+        cpp[i].position.z -= speed;
+        // cpp[i].rotation.setFromRotationMatrix(camera.matrix);
+        // did the camera just pass a full path segment?
+        if (cpp[i].position.z < cameraZ - controlPointDistance*2) {
+            controlPoints.remove(cpp[i]);
+            controlPoints.add(makeControlPointAtZ(z));
+            needsRebuild = true;
+            z += controlPointDistance;
+        }
+    }
+    if (needsRebuild) {
+        rebuildPath();
+    }
+    
+    // Camera
+    // scene.rotation.z = time * 0.13;
+    var farthest = controlPoints.children[0];
+    
+    var playerPos = pathPositionAtZ(0);
+    player.position.x = playerPos.x;
+    player.position.y = playerPos.y;
+    applyPathQuaternionAtZ(0, player);
+
+    var lookAheadPos = pathPositionAtZ(cameraZ + cameraLookAhead);
+    lookAheadPos.z = cameraZ + cameraLookAhead;
+    lookAheadObj.position.copy(lookAheadPos);
+    // player.position.copy(lookAheadPos);
+    // lookAheadObj.rotateX(Math.PI * 2 * (time % 10));
+    lookAheadObj.rotation.setFromRotationMatrix(camera.matrix);
+    
+    var cameraPos = pathPositionAtZ(cameraZ);
+    camera.position.x = cameraPos.x;
+    camera.position.y = cameraPos.y + cameraY;
+    // camera.position.x = playerPos.x;
+    // camera.position.y = playerPos.y + cameraY;
+
+    // applyPathQuaternionAtZ(cameraZ, camera);
+    // // camera.quaternion.copy(player.quaternion);
+    // camera.rotateX(Math.PI/2*3)
+    // camera.rotateZ(Math.PI)
+    
+    // camera.lookAt(new THREE.Vector3(0, 0, depth));
+    // camera.lookAt(player.position);
+    camera.lookAt(lookAheadPos);
+}
+
+function render() {
+    renderer.render(scene, camera);
+}
+
+function moveZ(positions, speed) {
+    var hasWrapped = false;
+    for (var i=0; i<positions.count*3; i+=3) {
+        positions.array[i+2] -= speed;
+        if (positions.array[i+2] < 0) {
+            positions.array[i+2] += depth;
+            hasWrapped = true;
+        }
+    }
+    positions.needsUpdate = true; // important!
+    return hasWrapped;
+}
+
+</script>
+
+</body>
+</html>
