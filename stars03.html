@@ -89,6 +89,7 @@ var numControlPoints = Math.round((depth - cameraZ) / controlPointDistance) + 3;
 var controlPoints = [];
 var pathCurve;
 var path;
+var tube;
 
 initDOM();
 initScene();
@@ -123,9 +124,10 @@ function initScene() {
     player = new THREE.Mesh(
         new THREE.BoxGeometry(40, 140, 1), 
         new THREE.MeshBasicMaterial({
-            color: 0x880000,
-            transparent: true,
-            blending: THREE.AdditiveBlending,
+            color: 0xff0000,
+            // opacity: 0.5,
+            // transparent: true,
+            // blending: THREE.AdditiveBlending,
         }));
     scene.add(player);
 
@@ -161,7 +163,6 @@ function initStars() {
     geometry.addAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.computeBoundingSphere();
 
-    // var material = new ShaderMaterial({});
     var uniforms = {
         time: { type: "f", value: 0 },
         depth: { type: "f", value: depth },
@@ -174,10 +175,10 @@ function initStars() {
         uniforms: uniforms,
         vertexShader: document.getElementById('stars-vertexshader').textContent,
         fragmentShader: document.getElementById('stars-fragmentshader').textContent,
-        transparent: true,
         depthTest: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
     });
-    material.blending = THREE.AdditiveBlending;
     
     starSystem = new THREE.Points(geometry, material);
     scene.add(starSystem);
@@ -192,8 +193,7 @@ function initLookAheadObj() {
     canvas.height = w;
     var ctx = canvas.getContext("2d");
     ctx.lineWidth = outline;
-    // ctx.strokeStyle = '#ffffff';
-    ctx.strokeStyle = '#333333';
+    ctx.strokeStyle = '#ffffff';
     ctx.arc(w/2, w/2, w/2-outline, 0, 2*Math.PI);
     ctx.stroke();
     
@@ -201,16 +201,16 @@ function initLookAheadObj() {
     texture.needsUpdate = true;
     var material = new THREE.MeshBasicMaterial({
         map: texture,
+        // opacity: 0.4,
         fog: false,
         transparent: true,
-        blending: THREE.AdditiveBlending,
+        // blending: THREE.AdditiveBlending,
     });
     
     lookAheadObj = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), material);
     // lookAheadObj.overdraw = true;
     // lookAheadObj.doubleSided = true;
-    // lookAheadObj.rotateX(Math.PI);
-    scene.add(lookAheadObj);
+    // scene.add(lookAheadObj);
 }
 
 function initControlPoints() {
@@ -238,35 +238,50 @@ function initPath() {
 }
 
 function rebuildPath() {
-    // Clear old lines
+    // Clear old geometry
     path.children = [];
     
-    // Farthest points come first
+    // Sort control points so that farthest points come first
     controlPoints.sort(function(a,b) {
         return b.z - a.z;
     });
     
+    // Compute path geometry
     pathCurve = new THREE.CatmullRomCurve3(controlPoints);
     // pathCurve.type = 'chordal';
     // pathCurve.type = 'catmullrom'; pathCurve.tension = 0.8;
-
     var geometry = new THREE.Geometry();
     var points = pathCurve.getPoints(20 * (controlPoints.length-1));
     for (var i=0; i<points.length; i++) {
         geometry.vertices.push(points[i]);
     }
 
-    var pathMaterial =  new THREE.LineBasicMaterial({
-        // color: 0x0dd6611, 
-        color: 0x0662211,
+    // Construct object
+    // var pathMaterial =  new THREE.LineBasicMaterial({
+    //     linewidth: 2.7,
+    //     color: 0x0dd6611,
+    //     // opacity: 1,
+    //     // transparent: true,
+    //     // blending: THREE.AdditiveBlending,
+    //     fog: true,
+    // });
+    // var line = new THREE.Line(geometry, pathMaterial);
+    // path.add(line);
+    
+    // Tube
+    scene.remove(tube);
+    var tubeGeom = new THREE.TubeGeometry(pathCurve, 10 * (controlPoints.length-1), 100, 8);
+    tube = new THREE.Mesh(tubeGeom, new THREE.MeshBasicMaterial({ 
+        wireframe: true,
         linewidth: 0.7,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
+        color: 0x000ff00, 
+        // opacity: 0.17,
+        // transparent: true,
+        // blending: THREE.AdditiveBlending,
         fog: true,
-    });
-    var line = new THREE.Line(geometry, pathMaterial);
-    // line.position.z = path.position.z;
-    path.add(line);
+    }));
+    scene.add(tube);
+    // scene.add(new THREE.DirectionalLight(0xffffff));
 }
 
 function pathPositionAtZ(z) {
@@ -306,6 +321,7 @@ function animate() {
     // Star field
     starSystem.material.uniforms.time.value = time;
     starSystem.material.uniforms.translateZ.value -= speed;
+    tube.position.z -= speed;
     
     // Path and control points
     for (var i=0; i<controlPoints.length; i++) {
