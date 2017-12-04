@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>stars</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+    body {
+        background-color: #050505;
+        margin: 0px;
+        overflow: hidden;
+    }
+    </style>
+</head>
+<body>
+    
+<div id="container"></div>
+
+<script src="js/vendor/three-r74.min.js"></script>
+<script src="js/vendor/OrbitControls.js"></script>
+<script src="js/vendor/Detector.js"></script>
+<script src="js/vendor/stats.min.js"></script>
+
+<script type="x-shader/x-vertex" id="stars-vertexshader">
+uniform float time;
+uniform float depth;
+uniform float alpha;
+uniform float pointSize;
+uniform float translateZ;
+// attribute vec3 position;
+
+varying vec4 vPosition;
+varying float distance;
+
+void main() {
+    float newZ = mod(position.z + translateZ, depth);
+    vPosition = vec4(position.x, position.y, newZ, 1.0);
+    distance = length(vPosition); // Distance from origin, NOT from camera
+    gl_PointSize = max(1., (1. - (distance / depth * 0.9)) * pointSize);
+    gl_Position = projectionMatrix * modelViewMatrix * vPosition;
+}
+</script>
+
+<script type="x-shader/x-fragment" id="stars-fragmentshader">
+uniform float depth;
+uniform float alpha;
+varying vec4 vPosition;
+varying float distance;
+
+void main() {
+    // gl_FragColor = vec4(1, 1, 1, alpha);
+    // Inverse distance, [0..1]
+    float a = clamp(1. - (distance / depth) / 2., 0., 1.);
+    // Fade out again when approaching origin
+    float nearDist = 700.;
+    // float na = 1.0 - pow(1. - min(distance, nearDist) / nearDist, 3.);
+    float na = 1.0 - pow(1. - min(vPosition.z, nearDist) / nearDist, 3.);
+    gl_FragColor = vec4(
+        pow(a, 3.),
+        pow(a, 2.),
+        a,
+        na * alpha);
+}
+</script>
+
+<script>
+if (!Detector.webgl) Detector.addGetWebGLMessage();
+
+var UP = new THREE.Vector3(0, 1, 0);
+
+var container, stats;
+var camera, scene, renderer, controls;
+
+var depth = 20000;   // star tunnel depth
+var outerRadius = depth/2;  // star tunnel radius in coordinate units
+var innerRadius = 400;
+
+var numStars = 10000;
+var starSystem;
+
+var cameraY = 20;
+var cameraZ = -40;
+var cameraLookAhead = 1700;
+var lookAheadObj;
+
+var speed = 50.0;   // in coordinate units per frame
+var player;
+
+var controlPointDistance = 2700;
+var numControlPoints = Math.round((depth - cameraZ) / controlPointDistance) + 3;
+var controlPoints = [];
+var pathCurve;
+var path;
+
+initDOM();
+initScene();
+update();
+
+function initDOM() {
+    container = document.getElementById('container');
+
+    renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    container.appendChild(renderer.domElement);
+
+    stats = new Stats();
+    stats.domElement.style.position = 'absolute';
+    stats.domElement.style.top = '0px';
+    container.appendChild(stats.domElement);
+
+    window.addEventListener('resize', onWindowResize, false);
+}
+
+function initScene() {
+    scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x0001133, cameraZ, depth);
+
+    initStars();
+    initControlPoints();
+    initPath();
+    initLookAheadObj();
+    
+    // Player
+    player = new THREE.Mesh(
+        new THREE.BoxGeometry(40, 140, 1), 
+        new THREE.MeshBasicMaterial({
+            color: 0xff0000,
+            // opacity: 0.5,
+            // transparent: true,
+            // blending: THREE.AdditiveBlending,
+        }));
+    scene.add(player);
+
+    // Camera
+    camera = new THREE.PerspectiveCamera(27, window.innerWidth / window.innerHeight, 1, depth);
+    camera.position.set(0, 0, cameraZ);
+    camera.lookAt(new THREE.Vector3(0, 0, depth));
+    // camera.position.set(2000, 0, 0);
+    // camera.lookAt(new THREE.Vector3(0, 0, 0));
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+}
+
+function initStars() {
+    // Particle system
+    var geometry = new THREE.BufferGeometry();
+    var positions = new Float32Array(numStars * 3);
+
+    var color = new THREE.Color();
+    var innerR = innerRadius / outerRadius;
+    for (var i=0; i<numStars; i++) {
+        // Random point in circle
+        var t = 2 * Math.PI * Math.random();
+        var u = innerR + (1-innerR) * (Math.random() + Math.random());
+        var r = (u>1 ? 2-u : u);
+        var x = outerRadius * r * Math.cos(t);
+        var y = outerRadius * r * Math.sin(t);
+        var z = Math.random() * depth;
+        positions[i*3]     = x;
+        positions[i*3 + 1] = y;
+        positions[i*3 + 2] = z;
+    }
+
+    geometry.addAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.computeBoundingSphere();
+
+    var uniforms = {
+        time: { type: "f", value: 0 },
+        depth: { type: "f", value: depth },
+        alpha: { type: "f", value: 0.95 },
+        pointSize: { type: "f", value: 2.3 }, // in screen pixels
+        translateZ: { type: "f", value: 0 },
+        // color: { type: "c", value: new THREE.Color(0x00ff00) },
+    };
+    var material = new THREE.ShaderMaterial({
+        uniforms: uniforms,
+        vertexShader: document.getElementById('stars-vertexshader').textContent,
+        fragmentShader: document.getElementById('stars-fragmentshader').textContent,
+        depthTest: false,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+    });
+    
+    starSystem = new THREE.Points(geometry, material);
+    scene.add(starSystem);
+}
+
+function initLookAheadObj() {
+    // Draw a circle texture
+    var w = 128;
+    var outline = w / 13;
+    var canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = w;
+    var ctx = canvas.getContext("2d");
+    ctx.lineWidth = outline;
+    ctx.strokeStyle = '#ffffff';
+    ctx.arc(w/2, w/2, w/2-outline, 0, 2*Math.PI);
+    ctx.stroke();
+    
+    var texture = new THREE.Texture(canvas);
+    texture.needsUpdate = true;
+    var material = new THREE.MeshBasicMaterial({
+        map: texture,
+        // opacity: 0.4,
+        fog: false,
+        transparent: true,
+        // blending: THREE.AdditiveBlending,
+    });
+    
+    lookAheadObj = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), material);
+    // lookAheadObj.overdraw = true;
+    // lookAheadObj.doubleSided = true;
+    // scene.add(lookAheadObj);
+}
+
+function initControlPoints() {
+    var z = depth;
+    for (var i=0; i<numControlPoints; i++) {
+        controlPoints.push(randomControlPointAtZ(z, innerRadius));
+        z -= controlPointDistance;
+    }
+}
+
+function randomControlPointAtZ(z, radius) {
+    // Random point in circle
+    var t = 2 * Math.PI * Math.random();
+    var u = Math.random() + Math.random();
+    var r = (u>1 ? 2-u : u);
+    var x = 0.5 * radius * r * Math.cos(t);
+    var y = 0.5 * radius * r * Math.sin(t);
+    return new THREE.Vector3(x, y, z);
+}
+
+function initPath() {
+    path = new THREE.Object3D();
+    rebuildPath();
+    scene.add(path);
+}
+
+function rebuildPath() {
+    // Clear old geometry
+    path.children = [];
+    
+    // Sort control points so that farthest points come first
+    controlPoints.sort(function(a,b) {
+        return b.z - a.z;
+    });
+    
+    // Compute path geometry
+    pathCurve = new THREE.CatmullRomCurve3(controlPoints);
+    // pathCurve.type = 'chordal';
+    // pathCurve.type = 'catmullrom'; pathCurve.tension = 0.8;
+    var geometry = new THREE.Geometry();
+    var points = pathCurve.getPoints(20 * (controlPoints.length-1));
+    for (var i=0; i<points.length; i++) {
+        geometry.vertices.push(points[i]);
+    }
+
+    // Construct object
+    var pathMaterial =  new THREE.LineBasicMaterial({
+        linewidth: 2.7,
+        color: 0x0dd6611,
+        // opacity: 1,
+        // transparent: true,
+        // blending: THREE.AdditiveBlending,
+        fog: true,
+    });
+    var line = new THREE.Line(geometry, pathMaterial);
+    path.add(line);
+}
+
+function pathPositionAtZ(z) {
+    var farthest = controlPoints[0];
+    var pathPos = (farthest.z - z) / pathCurve.getLength();
+    return pathCurve.getPoint(pathPos);
+}
+
+function pathQuaternionAtZ(z) {
+    var farthest = controlPoints[0];
+    var pathPos = (farthest.z - z) / pathCurve.getLength();
+    var tangent = pathCurve.getTangent(pathPos).normalize();
+    var axis = new THREE.Vector3();
+    axis.crossVectors(UP, tangent).normalize();
+    var radians = Math.acos(UP.dot(tangent));
+    return new THREE.Quaternion().setFromAxisAngle(axis, radians); 
+}
+
+function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function update() {
+    controls.update();
+    animate();
+    render();
+    stats.update();
+    requestAnimationFrame(update);
+}
+
+function animate() {
+    var time = performance.now() / 1000;
+
+    // Star field
+    starSystem.material.uniforms.time.value = time;
+    starSystem.material.uniforms.translateZ.value -= speed;
+    
+    // Path and control points
+    for (var i=0; i<controlPoints.length; i++) {
+        controlPoints[i].z -= speed;
+    }
+    path.position.z -= speed;
+    // Did the camera just pass a full path segment?
+    if (path.position.z < -controlPointDistance) {
+        path.position.z += controlPointDistance;
+        controlPoints.pop(); // remove nearest one
+        var farthest = controlPoints[0];
+        var z = farthest.z + controlPointDistance;
+        controlPoints.unshift(randomControlPointAtZ(z, innerRadius));
+        rebuildPath();
+    }
+    
+    // Player
+    player.position.copy(pathPositionAtZ(0));
+    player.quaternion.copy(pathQuaternionAtZ(0));
+
+    // Camera
+    
+    // 1. Camera follows path
+    // var cameraPos = pathPositionAtZ(cameraZ).add(new THREE.Vector3(0, cameraY, 0));
+
+    // 2. Camera sits behind player, in world coordinates
+    // var cameraPos = player.position.add(new THREE.Vector3(0, cameraY, cameraZ));
+
+    // 3. Camera sits behind player, in player coordinates
+    var back = UP.clone();
+    back.applyQuaternion(player.quaternion);
+    back.multiplyScalar(-cameraZ);
+    back.y += cameraY;
+    var cameraPos = new THREE.Vector3().addVectors(player.position, back);
+
+    camera.position.copy(cameraPos);
+    camera.lookAt(lookAheadObj.position);
+
+    // Target
+    lookAheadObj.position.copy(pathPositionAtZ(cameraZ + cameraLookAhead));
+    lookAheadObj.quaternion.copy(camera.quaternion);
+}
+
+function render() {
+    renderer.render(scene, camera);
+}
+
+</script>
+
+</body>
+</html>
